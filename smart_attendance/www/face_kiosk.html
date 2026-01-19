@@ -154,19 +154,25 @@
     border-radius: 10px;
     overflow: hidden;
     height: 360px;
-    background: linear-gradient(180deg, rgba(3, 7, 14, 0.65), rgba(2, 6, 12, 0.82));
+    /* Use the aurora variables for the background gradient */
+    background: linear-gradient(135deg, var(--aurora-a), var(--aurora-b));
     border: 1px solid rgba(255, 255, 255, 0.02);
+    box-shadow: 0 0 30px var(--aurora-a);
+    /* Add outer glow */
   }
 
+  /* Dark overlay inside camera to ensure video/content visibility */
   .camera-inner {
     position: absolute;
-    inset: 8px;
+    inset: 3px;
+    /* slight padding to show the gradient border effect */
     border-radius: 8px;
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(6, 8, 16, 0.6);
+    background: rgba(10, 16, 26, 0.85);
+    /* darken the bright gradient */
   }
 
   .camera-bg {
@@ -174,8 +180,8 @@
     inset: 0;
     background-size: cover;
     background-position: center;
-    opacity: 0.12;
-    filter: blur(6px) saturate(85%);
+    opacity: 0.25;
+    filter: blur(10px) saturate(120%);
   }
 
   video {
@@ -183,19 +189,25 @@
     height: 100%;
     object-fit: cover;
     display: block;
+    position: relative;
+    z-index: 2;
   }
 
+  /* Dynamic Ribbon using Variables */
   .ribbon {
     position: absolute;
     width: 200%;
     height: 160%;
     top: -30%;
     left: -50%;
-    background: linear-gradient(90deg, rgba(124, 58, 237, 0.12), rgba(6, 182, 212, 0.12));
+    /* Use variables with some transparency if possible, or just the colors */
+    background: linear-gradient(90deg, var(--aurora-a), var(--aurora-b));
     transform: rotate(-12deg);
     animation: floatRibbon 16s linear infinite;
-    filter: blur(28px);
-    opacity: 0.9;
+    filter: blur(40px);
+    opacity: 0.3;
+    /* control intensity via opacity */
+    z-index: 1;
   }
 
   @keyframes floatRibbon {
@@ -212,14 +224,20 @@
     }
   }
 
+  /* Dynamic Glow using Variables */
   .glow {
     position: absolute;
     inset: 8px;
     border-radius: 8px;
     pointer-events: none;
-    box-shadow: 0 0 40px rgba(124, 58, 237, 0.12), 0 0 80px rgba(6, 182, 212, 0.06) inset;
+    /* Box shadow doesn't support simple opacity on vars easily without relative color syntax, 
+       but we can just use the solid colors and rely on the ribbon/bg for the main effect, 
+       or use a simple inset shadow */
+    box-shadow: inset 0 0 60px var(--aurora-a);
     animation: glowPulse 4.5s ease-in-out infinite;
     mix-blend-mode: screen;
+    z-index: 3;
+    opacity: 0.4;
   }
 
   @keyframes glowPulse {
@@ -1054,8 +1072,20 @@
       canvas.width = w; canvas.height = h;
     }
 
+    function playClickTone() {
+      if (!audioCtx || !feature_sound.checked) return;
+      playTone(1200, 30, 'triangle', 0.05);
+    }
+
+    function vibrateTap() {
+      if (!feature_vibrate.checked) return;
+      if (navigator.vibrate) navigator.vibrate(10);
+    }
+
     /* ---------- Button bindings ---------- */
     captureBtn.addEventListener('click', async () => {
+      playClickTone();
+      vibrateTap();
       const emp = empInput.value.trim();
       if (!emp) { show3DNotify('error', '❌ Employee ID Required'); return; }
       await prepareCaptureCanvas();
@@ -1066,6 +1096,8 @@
     });
 
     inoutBtn.addEventListener('click', async () => {
+      playClickTone();
+      vibrateTap();
       const emp = empInput.value.trim();
       if (!emp) { show3DNotify('error', '❌ Employee ID Required'); return; }
       markAttendance(emp);
