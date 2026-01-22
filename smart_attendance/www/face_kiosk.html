@@ -767,15 +767,24 @@ inoutBtn.addEventListener('click', async ()=>{
 previewBtn.addEventListener('click', ()=> imgPreview.classList.toggle('hidden'));
 
 /* ================= HOLIDAY LIST (FINAL & CLEAN) ================= */
-(async function(){
-  console.log("vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")
+/* ================= HOLIDAY LIST (FINAL & CLEAN) ================= */
+// Promoted to main scope
+    
+// Event listener for employee input change
+empInput.addEventListener('change', function(){
+    const emp = this.value.trim();
+    if(emp) loadNext15DaysHolidays(emp);
+});
 
 /* ================= LOAD HOLIDAYS ================= */
 
-async function loadNext15DaysHolidays(){
+async function loadNext15DaysHolidays(employee_id=null){
   try {
+    const params = new URLSearchParams();
+    if(employee_id) params.append("employee", employee_id);
+
     const res = await fetch(
-      "/api/method/smart_attendance.smart_attendance.api.custom_holidays.fetch_next_15_days_holidays"
+      "/api/method/smart_attendance.smart_attendance.api.custom_holidays.fetch_next_15_days_holidays?" + params.toString()
     );
 
     const data = await res.json();
@@ -816,9 +825,8 @@ function renderNext15Days(data){
 /* ================= INIT ================= */
 
 // ✅ Load holidays on page load (today → next 15 days)
+// ✅ Load holidays on page load (today → next 15 days)
 loadNext15DaysHolidays();
-
-})();
 
 /* ================= INIT ================= */
 
@@ -840,7 +848,7 @@ document.addEventListener('click', function once(){
 
 /* ---------- Initial load ---------- */
 await loadKioskSettings();
-loadHolidays();
+loadNext15DaysHolidays();
 
 renderHistory();
 setTimeout(resizeOverlay,600);
