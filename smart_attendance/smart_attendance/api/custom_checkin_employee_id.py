@@ -80,7 +80,9 @@ def _create_attendance_if_missing(employee_id):
                 "attendance_date": today,
                 "status": "Present"
             })
+
             
+
             doc.insert(ignore_permissions=True)
         except Exception:
             pass # Ignore if duplicate error or other issues
