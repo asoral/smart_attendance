@@ -12,7 +12,6 @@ from smart_attendance.smart_attendance.api.custom_checkin_employee_id import mar
 # Try importing face_recognition and OpenCV
 try:
     import face_recognition
-    import face_recognition
     import cv2
     from PIL import Image, ImageOps 
 except ImportError:
@@ -163,25 +162,35 @@ def check_liveness(image_path, face_location=None):
         
         # REJECTION CRITERIA (ADAPTIVE BIOMETRIC)
         # 1. Base Texture Floor
-        if texture_score < 11:
+        # Relaxed from 11 to 9 for smoother skin/lower light
+        if texture_score < 9:
             return False, f"Anti-Spoofing: Natural texture too low ({texture_score:.1f})"
             
         # 2. Regional Variance (The "Flat" Check)
         # Real faces > 0.4. Photos/Screens < 0.3.
         # Strict if low detail.
-        v_limit = 0.38 if is_low_detail else 0.32
+        # Relaxed limits: 0.30 (low detail) / 0.25 (standard)
+        v_limit = 0.30 if is_low_detail else 0.25
         if org_v < v_limit:
              return False, f"Anti-Spoofing: Surface too uniform ({org_v:.2f})"
 
         # 3. Frequency Ratio Check 
         # Real phone hits ~42. Photos hit 39-45.
-        # If low detail, the ratio MUST be lower (blocked if high ratio + low detail)
-        r_limit = 35 if is_low_detail else 46
+        # High quality cameras can hit 50+. 
+        # Valid User Log: 50.3. 
+        # We set limit to 55 to allow valid users but block high-freq screens (60+).
+        r_limit = 56 if is_low_detail else 55
+        
+        # REMOVED BYPASS: High contrast screens were exploiting the organic variance bypass.
+        
         if rel_freq > r_limit:
             return False, f"Anti-Spoofing: Secondary scan failed ({rel_freq:.1f})"
             
         # 4. Signal Sharpness (Digital Grid)
-        if sharpness > 0.18:
+        # Valid User: 0.12.
+        # Screen: > 0.18 usually.
+        # Tightened to 0.17 to catch sharp digital replays.
+        if sharpness > 0.17:
              return False, f"Anti-Spoofing: Digital grid detected ({sharpness:.2f})"
 
         return True, f"Liveness Check Passed (T:{texture_score:.0f}, O:{org_v:.1f})"
@@ -218,17 +227,21 @@ def attach_image_to_fal(fal_name, image_base64):
 # ------------ ✅ MAIN API ------------
 
 @frappe.whitelist(allow_guest=True)
-def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_type: str = "AUTO", tolerance: float = 0.6):
+def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_type: str = "AUTO", tolerance: float = 0.45, timestamp: str = None):
     """
     Inputs:
         employee: Optional.
         image_base64: Required.
         log_type: "IN", "OUT", or "AUTO".
-        tolerance: Matching threshold for dlib (default 0.55).
-                   Lower is stricter. 0.6 is typical, 0.55 offers higher precision.
+        tolerance: Matching threshold for dlib (default 0.45).
+                   Lower is stricter. 0.4 is recommended for high security.
     """
     
-    frappe.log_error("Mark Attendance By Face - START", "Kiosk Debug")
+    frappe.log_error(f"Mark Attendance By Face - Emp:{employee}", "Kiosk Debug")
+
+    # Sanitize log_type - Default to IN, treat AUTO as IN explicit mode
+    if not log_type or str(log_type).lower() in ["null", "undefined", "none", "", "auto"]:
+        log_type = "IN"
     
     if not face_recognition:
         frappe.log_error("Face Rec Lib Missing", "Kiosk Debug")
@@ -243,7 +256,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         return {"ok": False, "message": "Invalid image data."}
 
     try:
-        frappe.log_error("Starting Face Detection...", "Kiosk Debug")
+        # frappe.log_error("Starting Face Detection...", "Kiosk Debug")
         # 2️⃣ Face Detection & Encoding
         try:
             image = face_recognition.load_image_file(temp_img_path)
@@ -251,15 +264,18 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             face_locations = face_recognition.face_locations(image)
             
             if not face_locations:
-                 frappe.log_error("No face detected in submitted image", "Kiosk Debug")
+                 # frappe.log_error("No face detected in submitted image", "Kiosk Debug")
                  return {"ok": False, "message": "No face detected in image."}
             
-            # 🟢 1.5 ADVANCED LIVENESS CHECK
+            # 🟢 1.5 ADVANCED LIVENESS CHECK (ENABLED)
             is_live, live_msg = check_liveness(temp_img_path, face_locations[0])
             if not is_live:
                  # Cleanup
                  if os.path.exists(temp_img_path):
-                     os.remove(temp_img_path)
+                     try:
+                        os.remove(temp_img_path)
+                     except:
+                        pass
                  return {
                      "ok": False, 
                      "message": live_msg,
@@ -283,26 +299,41 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         detected_employee = employee
         match_distance = 1.0 
         
-        # 3️⃣ Fetch Stored Encodings
-        # We fetch (employee, encoding_json) from DB
+        # 3️⃣ Fetch Stored Encodings (Active Employees Only)
+        # We fetch (employee, encoding_json) from DB, ensuring Employee exists and is Active
         candidates = frappe.db.sql("""
-            SELECT employee, encoding 
-            FROM `tabEmployee Face` 
-            WHERE encoding IS NOT NULL AND encoding != ''
+            SELECT ef.employee, ef.encoding 
+            FROM `tabEmployee Face` ef
+            INNER JOIN `tabEmployee` e ON ef.employee = e.name
+            WHERE ef.encoding IS NOT NULL AND ef.encoding != ''
+            AND e.status = 'Active'
         """, as_dict=True)
         
         if not candidates:
-             return {"ok": False, "message": "No registered face data found."}
+             return {"ok": False, "message": "No registered face data found for active employees."}
+
+        # 🔴 STRICT CHECK: If employee ID provided, verify they have a registered face
+        if employee:
+             # Standardize employee filtering
+             candidates = [c for c in candidates if c.employee == employee]
+             
+             if not candidates:
+                 return {"ok": False, "message": f"Employee {employee} has no face registered. Please register face first."}
+             
+             # Enforce Strict Tolerance for Explicit Check
+             # tolerance = 0.45 if 0.45 < float(tolerance) else float(tolerance)
+             # Let's enforce 0.42 as a hard limit for explicit checks to avoid mismatches
+             if tolerance > 0.42:
+                 tolerance = 0.42
 
         best_match_emp = None
         best_match_dist = 100.0
-        
+        second_best_dist = 100.0  # For ambiguity check
+
         # 4️⃣ Compare against Candidates
         for cand in candidates:
-            # If explicit employee requested, filter
-            if employee and cand.employee != employee:
-                continue
-                
+            # (Filtering already done above if employee provided)
+            
             try:
                 db_vector = []
                 # 1. Try JSON load
@@ -323,34 +354,54 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                 dist = dist_arr[0]
                 
                 if dist < best_match_dist:
+                    second_best_dist = best_match_dist # Push current best to second
                     best_match_dist = dist
                     best_match_emp = cand.employee
-                    
-                # Optimization: Break if very close match
-                if dist < 0.35:
-                    break
+                elif dist < second_best_dist:
+                    second_best_dist = dist
                     
             except Exception as e:
                 # frappe.log_error("Face Match Error", str(e))
                 continue
 
         # 5️⃣ Validate Match
-        if best_match_dist <= float(tolerance):
+        
+        # AMBIGUITY CHECK (Skip if explicit employee is set, as we only have 1 candidate max)
+        if not employee:
+            diff_score = second_best_dist - best_match_dist
+            
+            required_gap = 0.05
+            if best_match_dist > 0.40:
+                 required_gap = 0.08
+                 
+            if diff_score < required_gap and second_best_dist < tolerance:
+                 frappe.log_error(f"Ambiguity Reject: Best {best_match_dist:.3f}, 2nd {second_best_dist:.3f}, Gap {diff_score:.3f}", "Kiosk Debug")
+                 return {
+                     "ok": False,
+                     "reason": "ambiguous_match",
+                     "message": f"Multiple similar faces detected (Gap: {diff_score:.3f}). Please approach closer."
+                 }
+
+        if best_match_dist <= tolerance:
             detected_employee = best_match_emp
             match_distance = float(best_match_dist)
         else:
+             msg = f"Face mismatch for {employee}" if employee else "Face not recognized"
              return {
                  "ok": False,
                  "reason": "face_not_matched",
-                 "distance": best_match_dist,
+                 "distance": float(best_match_dist),
                  "tolerance": float(tolerance),
-                 "message": "Face not recognized."
+                 "message": f"{msg} (Dist: {best_match_dist:.2f} > {tolerance}). Please try again."
              }
 
         # 6️⃣ MARK ATTENDANCE
         try:
-            frappe.log_error(f"Face Matched: {detected_employee}, calling mark_kiosk_attendance", "Kiosk Debug")
-            kiosk_result = mark_kiosk_attendance(detected_employee, log_type if log_type != "AUTO" else None)
+            kiosk_result = mark_kiosk_attendance(detected_employee, log_type, timestamp=timestamp)
+            
+            if not kiosk_result.get("ok"):
+                 frappe.log_error(f"Kiosk Logic Failure: {json.dumps(kiosk_result)}", "Kiosk Logic Error")
+            
         except Exception:
             err = frappe.get_traceback()
             frappe.log_error(err, "Kiosk Crash Trace")
@@ -358,14 +409,14 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         
         if not kiosk_result.get("ok"):
             return kiosk_result
-    
-        final_log_type = kiosk_result.get("log_type")
-    
+        
+        # Populate final_log_type from logic result
+        final_log_type = kiosk_result.get("log_type", log_type)
     
         # 7️⃣ AUDIT LOG SAFE BLOCK
         log_name = ""
         try:
-            frappe.log_error("Creating Audit Log...", "Kiosk Debug")
+            # frappe.log_error("Creating Audit Log...", "Kiosk Debug")
             
             # 60-Second Cooldown for Audit Log
             last_audit_time = frappe.db.get_value("Face Attendance Log", 
@@ -377,7 +428,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                 from frappe.utils import get_datetime
                 diff = (now_datetime() - get_datetime(last_audit_time)).total_seconds()
                 if diff < 60:
-                    frappe.log_error(f"Audit log skipped for {detected_employee} (Cooldown: {int(diff)}s)", "Kiosk Debug")
+                    # frappe.log_error(f"Audit log skipped for {detected_employee} (Cooldown: {int(diff)}s)", "Kiosk Debug")
                     return {
                         "ok": True,
                         "log_name": "COOLDOWN_SKIPPED",
@@ -406,7 +457,6 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             frappe.db.commit()
         except Exception as e:
             frappe.log_error(f"Audit Log Failed: {str(e)}", "Kiosk Logic Error")
-            # Do NOT return error, attendance was marked successfully
     
         return {
             "ok": True,
@@ -415,7 +465,10 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             "employee_name": frappe.db.get_value("Employee", detected_employee, "employee_name"),
             "log_type": final_log_type,
             "distance": match_distance,
-            "message": f"Welcome {detected_employee} ({final_log_type})"
+            "message": f"Welcome {detected_employee} ({final_log_type})",
+            # Pass through critical fields from kiosk_result so frontend can show success popup
+            "name": kiosk_result.get("name"),
+            "time": kiosk_result.get("time")
         }
 
     except Exception as e:

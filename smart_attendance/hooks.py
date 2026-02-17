@@ -87,7 +87,7 @@ website_route_rules = [
 # Installation
 # ------------
 
-# before_install = "smart_attendance.install.before_install"
+before_install = "smart_attendance.install.dependency.before_install"
 # after_install = "smart_attendance.install.after_install"
 
 # Uninstallation
@@ -200,7 +200,7 @@ override_whitelisted_methods = {
 
 # Request Events
 # ----------------
-# before_request = ["smart_attendance.utils.before_request"]
+before_request = ["smart_attendance.utils.before_request"]
 # after_request = ["smart_attendance.utils.after_request"]
 
 # Job Events
@@ -250,4 +250,5 @@ override_whitelisted_methods = {
 ignore_csrf = [
     "smart_attendance.api.verify_face",
     "smart_attendance.api.enroll_face",
+    "smart_attendance.kiosk.verify_face",
 ]
