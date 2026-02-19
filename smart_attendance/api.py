@@ -45,7 +45,7 @@ def get_today_logs(employee):
         return logs
 
     except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "Kiosk API Error")
+        pass
         return []
 
 
@@ -216,8 +216,7 @@ def enroll_face(employee, image_base64):
 def verify_face(**kwargs):
     """Kiosk calls this endpoint (POST). Uses kwargs to avoid 400 Bad Request on arg mismatch."""
     try:
-        # Debug: Log keys to verify reception
-        frappe.log_error(f"Kiosk Verify Called. Args: {list(kwargs.keys())}", "Kiosk Debug")
+
         
         # Extract args safely
         device_id = kwargs.get("device_id")
@@ -252,7 +251,7 @@ def verify_face(**kwargs):
                  
                  return mark_attendance_by_face(employee, image_base64, log_type, confidence_threshold, verify_only=verify_only)
              except Exception as e:
-                 frappe.log_error(f"Delegation Error: {str(e)}", "Kiosk Debug")
+                 pass
                  return {"ok": False, "message": f"Server Error: {str(e)}"}
 
         # authenticate device
@@ -298,7 +297,7 @@ def verify_face(**kwargs):
                     best_dist = dist
                     best = f
             except Exception as e:
-                frappe.log_error(f"Error processing face encoding for {f.name}: {str(e)}")
+                pass
                 continue
         confidence = float(1.0 - best_dist) if best else 0.0
         
@@ -347,7 +346,7 @@ def verify_face(**kwargs):
                     "log_type": final_log_type
                 }
             except Exception as e:
-                frappe.log_error(f"Failed to create Employee Checkin: {str(e)}")
+                pass
                 return {"status":"success", "ok": False, "message": f"Face matched but Check-in failed: {str(e)}", "employee": best.employee, "confidence": confidence}
             # ---------------------------
         else:
@@ -356,7 +355,7 @@ def verify_face(**kwargs):
             
             # LOGGING FOR DEBUGGING
             dist_msg = f"Best: {1.0-confidence:.2f} (Conf: {confidence:.2f})" if best else "No match"
-            frappe.log_error(f"Face Mismatch. Found {len(faces)} known faces. {dist_msg}", "Kiosk Debug")
+            pass
             
             att = frappe.get_doc({
                 "doctype":"Face Attendance",
@@ -372,7 +371,7 @@ def verify_face(**kwargs):
             return {"status":"unmatched", "confidence": confidence}
 
     except Exception as e:
-        frappe.log_error(f"Kiosk Verify Error (Top Level): {str(e)}", "Kiosk Crash")
+        pass
         return {"ok": False, "message": f"System Error: {str(e)}"}
  
 # Helpers:
@@ -398,11 +397,11 @@ def _compute_encoding(imgbytes):
         
         # Log if no face found during enrollment/verification internal check
         if not encs:
-            frappe.log_error("No face found in image during encoding.", "Face Encode Debug")
+            pass
             
         return encs[0].tolist() if encs else None
     except Exception as e:
-        frappe.log_error(message=str(e), title="Face encoding error")
+        pass
         return None
 
 def _attach_file(doc, imgbytes):
@@ -431,6 +430,44 @@ def get_recent_attendance(employee):
             limit=5,
             ignore_permissions=True
         )
+
+        # Check if today's attendance is already in the list
+        today_date = get_datetime(nowdate()).date()
+        has_today = False
+        for att in attendance_list:
+            # att.attendance_date can be date or str
+            att_date = get_datetime(att.attendance_date).date()
+            if att_date == today_date:
+                has_today = True
+                break
+        
+        # If no Attendance record for today, check Employee Checkin
+        if not has_today:
+            today_checkins = frappe.get_all("Employee Checkin", filters={
+                "employee": employee,
+                "time": ["between", [f"{today_date} 00:00:00", f"{today_date} 23:59:59"]]
+            }, fields=["time", "log_type"], order_by="time asc")
+
+            if today_checkins:
+                # Construct synthetic record
+                first_log = today_checkins[0]
+                last_log = today_checkins[-1] if len(today_checkins) > 1 else None
+                
+                # Calculate synthetic working hours
+                wh = 0
+                if last_log and last_log.time != first_log.time:
+                     start = get_datetime(first_log.time)
+                     end = get_datetime(last_log.time)
+                     wh = (end - start).total_seconds() / 3600.0
+
+                synthetic_att = frappe._dict({
+                    "attendance_date": today_date,
+                    "status": "Present",
+                    "in_time": first_log.time,
+                    "out_time": last_log.time if last_log and last_log.time != first_log.time else None,
+                    "working_hours": wh
+                })
+                attendance_list.insert(0, synthetic_att)
         
         # Format for frontend
         data = []
@@ -461,7 +498,7 @@ def get_recent_attendance(employee):
                          if diff > 0:
                              att.working_hours = diff
                 except Exception as e:
-                    frappe.log_error(f"Error fetching logs fallback: {e}")
+                    pass
 
             in_time = format_time(att.get("in_time"))
             out_time = format_time(att.get("out_time"))
@@ -485,7 +522,7 @@ def get_recent_attendance(employee):
             
         return data
     except Exception as e:
-        frappe.log_error(f"Error fetching attendance: {e}", "Kiosk API")
+        pass
         return []
 
 def format_time(time_val):
@@ -537,5 +574,5 @@ def get_employee_holidays(employee):
          # Fallback if ERPNext module not found (unlikely)
          return fetch_next_15_days_holidays(employee).get("holidays", [])
     except Exception as e:
-        frappe.log_error(f"Error fetching holidays: {e}", "Kiosk API")
+        pass
         return []

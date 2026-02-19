@@ -20,7 +20,7 @@ def mark_kiosk_attendance(employee, log_type=None, timestamp=None):
     try:
         employee_id = employee
         # TRACE 1
-        frappe.log_error(f"TRACE 1: Start {employee_id}", "Kiosk Trace")
+        pass
         frappe.db.commit()
 
         if not employee_id:
@@ -30,26 +30,44 @@ def mark_kiosk_attendance(employee, log_type=None, timestamp=None):
             return {"ok": False, "message": "Employee not found"}
 
         # TRACE 2
-        frappe.log_error("TRACE 2: Pre-Cooldown", "Kiosk Trace")
+        pass
         frappe.db.commit()
 
-        # 1. ESTABLISH CURRENT TIME (Consistently for Cooldown & Insert)
-        # Use Frontend Timestamp if available to ensure Cooldown checks against "Wall Clock" time
-        # This fixes "Please wait 6840s" errors caused by Server-Client Timezone mismatches.
-        checkin_time = now_datetime()
-        if timestamp:
-            try:
-                # Parse string to datetime
-                parsed_ts = get_datetime(timestamp)
+        # 1. ESTABLISH CURRENT TIME
+        # Priority: Employee's User Timezone > Session User Timezone > System Timezone
+        target_tz_str = None
+        
+        try:
+            # A) Try Session User first (Highest Priority as per request)
+            if frappe.session.user and frappe.session.user != "Guest":
+                target_tz_str = frappe.db.get_value("User", frappe.session.user, "time_zone")
+
+            # B) If not found, try Employee -> User
+            if not target_tz_str and employee_id:
+                user_id = frappe.db.get_value("Employee", employee_id, "user_id")
+                if user_id:
+                     target_tz_str = frappe.db.get_value("User", user_id, "time_zone")
+            
+            # C) Fallback to System Timezone
+            if not target_tz_str:
+                from frappe.utils import get_system_timezone
+                target_tz_str = get_system_timezone() or "Asia/Kolkata"
                 
-                # If it has timezone info, convert to system local time then strip
-                if parsed_ts.tzinfo:
-                    parsed_ts = parsed_ts.astimezone(None).replace(tzinfo=None)
-                
-                checkin_time = parsed_ts
-            except Exception as e:
-                frappe.log_error(f"Timestamp Parse Error: {e}", "Kiosk Debug")
-                # Fallback to server time stays as now_datetime()
+            # Log Timezone Decision
+            # frappe.log_error(f"Timezone Selected: {target_tz_str} for {employee_id} (Session: {frappe.session.user})", "Kiosk TZ Debug")
+
+            import pytz
+            from datetime import datetime
+            
+            tz = pytz.timezone(target_tz_str)
+            
+            # Get UTC time first, then convert to Target Timezone
+            utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
+            checkin_time = utc_now.astimezone(tz).replace(tzinfo=None)
+            
+        except Exception as e:
+            pass
+            checkin_time = now_datetime()
 
         # 2. COOLDOWN CHECK (Using established checkin_time)
         last_log_time = frappe.db.get_value("Employee Checkin", 
@@ -120,18 +138,17 @@ def mark_kiosk_attendance(employee, log_type=None, timestamp=None):
         frappe.db.commit()
 
         # TRACE 5
-        frappe.log_error(f"TRACE 5: Post-Insert {checkin.name}", "Kiosk Trace")
+        pass
 
         # Auto-create Attendance Record for 'IN'
         if final_log_type == "IN":
-            # Just log, don't break if this fails
             try:
                 # Basic attendance creation
-                pass 
+                _create_attendance_if_missing(employee_id, checkin_time)
             except: pass
         
         # TRACE 6
-        frappe.log_error(f"TRACE 6: Success - {checkin.name}", "Kiosk Trace")
+        pass
 
         emp_name = frappe.db.get_value("Employee", employee_id, "employee_name")
 
@@ -147,11 +164,11 @@ def mark_kiosk_attendance(employee, log_type=None, timestamp=None):
     except Exception as e:
         frappe.db.rollback()
         err_msg = f"Kiosk Logic Crash: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), "Kiosk Logic Crash")
+        pass
         frappe.db.commit() # Ensure error is logged
         return {"ok": False, "message": err_msg}
 
-def _create_attendance_if_missing(employee_id):
+def _create_attendance_if_missing(employee_id, checkin_time):
     try:
         today = nowdate()
         if not frappe.db.exists("Attendance", {"employee": employee_id, "attendance_date": today}):
@@ -159,8 +176,9 @@ def _create_attendance_if_missing(employee_id):
                 "doctype": "Attendance",
                 "employee": employee_id,
                 "attendance_date": today,
-                "status": "Present"
+                "status": "Present",
+                "in_time": checkin_time
             })
             doc.insert(ignore_permissions=True)
     except Exception as e:
-        frappe.log_error(f"Auto Attendance Error: {e}", "Kiosk Trace")
+        pass

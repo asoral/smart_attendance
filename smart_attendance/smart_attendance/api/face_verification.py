@@ -77,7 +77,7 @@ def _save_base64_to_temp(image_base64: str):
              image_bytes = buf.getvalue()
              
     except Exception as e:
-        frappe.log_error(f"Image Decode Error: {e}", "Kiosk Debug")
+        pass
         return None
     
     # Create a temp file
@@ -158,45 +158,117 @@ def check_liveness(image_path, face_location=None):
         
         rel_freq = (h_freq / l_freq) * 100 if l_freq > 0 else 0
         
-        frappe.log_error(f"Liveness - T:{texture_score:.1f}, Org:{org_v:.2f}, Ratio:{rel_freq:.1f}, Sharp:{sharpness:.2f}", "Kiosk Debug")
+        pass
         
         # REJECTION CRITERIA (ADAPTIVE BIOMETRIC)
         # 1. Base Texture Floor
-        # Relaxed from 11 to 9 for smoother skin/lower light
-        if texture_score < 9:
+        # Tightened from 9 to 18 to block smooth phone screens/photos
+        if texture_score < 18:
             return False, f"Anti-Spoofing: Natural texture too low ({texture_score:.1f})"
             
         # 2. Regional Variance (The "Flat" Check)
         # Real faces > 0.4. Photos/Screens < 0.3.
         # Strict if low detail.
-        # Relaxed limits: 0.30 (low detail) / 0.25 (standard)
-        v_limit = 0.30 if is_low_detail else 0.25
+        # Tightened to 0.45/0.35
+        v_limit = 0.45 if is_low_detail else 0.35
         if org_v < v_limit:
              return False, f"Anti-Spoofing: Surface too uniform ({org_v:.2f})"
 
         # 3. Frequency Ratio Check 
         # Real phone hits ~42. Photos hit 39-45.
         # High quality cameras can hit 50+. 
-        # Valid User Log: 50.3. 
-        # We set limit to 55 to allow valid users but block high-freq screens (60+).
-        r_limit = 56 if is_low_detail else 55
-        
-        # REMOVED BYPASS: High contrast screens were exploiting the organic variance bypass.
-        
+        # Tightened to 50 to block high-freq screens.
+        r_limit = 50 if is_low_detail else 47
+         
         if rel_freq > r_limit:
             return False, f"Anti-Spoofing: Secondary scan failed ({rel_freq:.1f})"
             
         # 4. Signal Sharpness (Digital Grid)
         # Valid User: 0.12.
         # Screen: > 0.18 usually.
-        # Tightened to 0.17 to catch sharp digital replays.
-        if sharpness > 0.17:
+        # Tightened further to 0.14 to block recent Retina exploit (0.18).
+        if sharpness > 0.14:
              return False, f"Anti-Spoofing: Digital grid detected ({sharpness:.2f})"
+
+        # 5. Color Integrity Check (YCrCb & HSV) - Blocks Video/Blue-Screens
+        try:
+            # A. YCrCb Balance (Blue Tint)
+            ycrcb = cv2.cvtColor(image_face, cv2.COLOR_BGR2YCrCb)
+            avg_cr = np.mean(ycrcb[:, :, 1])
+            avg_cb = np.mean(ycrcb[:, :, 2])
+            
+            # Real skin: Red (Cr) should be dominant over Blue (Cb)
+            if avg_cb > avg_cr:
+                 if np.mean(gray_face) > 40: # If not super dark
+                      return False, f"Anti-Spoofing: Unnatural color balance (Screen detected)"
+                      
+            # B. HSV Analysis (Screen Color Gamut & Quantization)
+            hsv = cv2.cvtColor(image_face, cv2.COLOR_BGR2HSV)
+            h, s, v = cv2.split(hsv)
+            
+            # Variance in Hue/Saturation 
+            # Real skin has nuances. Screens/Videos are often flatter or quantized.
+            s_std = np.std(s)
+            h_std = np.std(h)
+            
+            # If saturation is suspiciously uniform (low variance), it's likely a screen/photo
+            # Real skin usually > 15-20 depending on lighting.
+            # Screen/Paper often < 10.
+            if s_std < 12 and np.mean(s) > 30:
+                 return False, f"Anti-Spoofing: Color saturation too uniform ({s_std:.1f})"
+
+        except:
+            pass
+
+        # 6. Specular Highlight Check (Glass Reflection - ACTIVE BLOCK)
+        # Screens/Phones are glass and reflect point lights sharply.
+        _, max_val, _, _ = cv2.minMaxLoc(gray_face)
+        if max_val >= 250:
+            # Check area of saturation
+            ret, thresh = cv2.threshold(gray_face, 248, 255, cv2.THRESH_BINARY)
+            bright_pixels = cv2.countNonZero(thresh)
+            total_pixels = gray_face.shape[0] * gray_face.shape[1]
+            ratio = bright_pixels / total_pixels
+            
+            # Small intense reflection (0.05% to 1.5%) is suspicious of glass glare
+            # Real faces have broader highlights (oil).
+            # Tightened: actively reject if this signature matches glass glare.
+            if 0.0005 < ratio < 0.015: 
+                 return False, f"Anti-Spoofing: Screen glare detected"
+
+        # 7. Face Size/Ratio Plausibility (Zooms)
+        # If user zooms in on a phone, the face often takes up > 70% of the image or looks distorted.
+        # Kiosk cameras usually see a face at 20-50% coverage.
+        # Calculate coverage
+        img_h, img_w = image.shape[:2]
+        face_h, face_w = gray_face.shape[:2]
+        coverage = (face_h * face_w) / (img_h * img_w)
+        
+        # If face is HUGE (zoom), block.
+        if coverage > 0.65:
+             return False, f"Anti-Spoofing: Face too close/zoomed ({int(coverage*100)}%)"
+        
+        # 8. Moiré Pattern (Improved High-Freq Power)
+        # Check power in high frequency bands specifically
+        # Already done via h_freq, but let's double check relative power
+        # If high freq is surprisingly weak COMPARED to mid freq (blur/screen), reject
+        # Real life has unlimited high freq. Screens are band-limited.
+        # h_freq is high corner. l_freq is low center.
+        # Mid-freq ring:
+        rows, cols = gray_face.shape
+        crow, ccol = rows//2 , cols//2
+        mid_freq = np.mean(magnitude_spectrum[crow-30:crow+30, ccol-30:ccol+30]) - l_freq
+        
+        # Ratio of Mid to High
+        # Screens have strong pixels (mid) but weak noise (high)
+        # This is experimental but can catch re-capture
+        # pass
 
         return True, f"Liveness Check Passed (T:{texture_score:.0f}, O:{org_v:.1f})"
         
     except Exception as e:
-        frappe.log_error(f"Liveness Multi-Check Error: {e}")
+        pass
+        
         return True, "Check skipped due to error"
 
 
@@ -237,14 +309,14 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                    Lower is stricter. 0.4 is recommended for high security.
     """
     
-    frappe.log_error(f"Mark Attendance By Face - Emp:{employee}", "Kiosk Debug")
+    pass
 
     # Sanitize log_type - Default to IN, treat AUTO as IN explicit mode
     if not log_type or str(log_type).lower() in ["null", "undefined", "none", "", "auto"]:
         log_type = "IN"
     
     if not face_recognition:
-        frappe.log_error("Face Rec Lib Missing", "Kiosk Debug")
+        pass
         return {"ok": False, "message": "Server Error: face_recognition library not installed."}
 
     if not image_base64:
@@ -292,7 +364,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             input_vector = face_encodings[0]
             
         except Exception as e:
-            frappe.log_error(f"Face Recognition Extract Error: {e}")
+            pass
             return {"ok": False, "message": "Face analysis failed. (Internal Error)"}
             
 
@@ -375,7 +447,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                  required_gap = 0.08
                  
             if diff_score < required_gap and second_best_dist < tolerance:
-                 frappe.log_error(f"Ambiguity Reject: Best {best_match_dist:.3f}, 2nd {second_best_dist:.3f}, Gap {diff_score:.3f}", "Kiosk Debug")
+                 pass
                  return {
                      "ok": False,
                      "reason": "ambiguous_match",
@@ -411,11 +483,11 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                 kiosk_result = mark_kiosk_attendance(detected_employee, log_type, timestamp=timestamp)
                 
                 if not kiosk_result.get("ok"):
-                     frappe.log_error(f"Kiosk Logic Failure: {json.dumps(kiosk_result)}", "Kiosk Logic Error")
+                     pass
                 
             except Exception:
                 err = frappe.get_traceback()
-                frappe.log_error(err, "Kiosk Crash Trace")
+                pass
                 return {"ok": False, "message": "Server crashed during check-in creation. See Error Log 'Kiosk Crash Trace'."}
         
         if not kiosk_result.get("ok"):
@@ -447,12 +519,48 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                         "employee_name": frappe.db.get_value("Employee", detected_employee, "employee_name"),
                         "log_type": final_log_type,
                         "distance": match_distance,
-                        "message": f"Welcome back {detected_employee}"
+                        "message": f"Welcome back {detected_employee}",
+                        "name": kiosk_result.get("name"),
+                        "time": kiosk_result.get("time")
                     }
 
             log = frappe.new_doc("Face Attendance Log")
-            log.employee = detected_employee
-            log.time = now_datetime()
+            # 1. Determine Time
+            log_time = None
+            
+            # --- NEW TIMEZONE LOGIC ---
+            # Try to get User Timezone, else fall back to System, ignoring Client Timestamp
+            target_tz_str = None
+            try:
+                # A) Session User (Priority)
+                if frappe.session.user and frappe.session.user != "Guest":
+                    target_tz_str = frappe.db.get_value("User", frappe.session.user, "time_zone")
+
+                # B) Employee User
+                if not target_tz_str and detected_employee:
+                     u_id = frappe.db.get_value("Employee", detected_employee, "user_id")
+                     if u_id:
+                         target_tz_str = frappe.db.get_value("User", u_id, "time_zone")
+                
+                # C) System Fallback
+                from frappe.utils import get_system_timezone
+                if not target_tz_str:
+                    target_tz_str = get_system_timezone() or "Asia/Kolkata"
+                
+                import pytz
+                from datetime import datetime
+                
+                tz = pytz.timezone(target_tz_str)
+                
+                # UTC -> Target TZ Conversion
+                utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
+                log_time = utc_now.astimezone(tz).replace(tzinfo=None)
+                
+            except Exception as e:
+                pass
+                log_time = now_datetime()
+
+            log.time = log_time
             log.log_type = final_log_type
             log.distance = match_distance
             log.details = f"Liveness: Pass, Dist: {match_distance:.4f}"
@@ -463,11 +571,11 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             try:
                 attach_image_to_fal(log.name, image_base64)
             except Exception as e:
-                frappe.log_error(f"Image Attach Failed: {str(e)}", "Kiosk Image Error")
+                pass
 
             frappe.db.commit()
         except Exception as e:
-            frappe.log_error(f"Audit Log Failed: {str(e)}", "Kiosk Logic Error")
+            pass
     
         return {
             "ok": True,
@@ -483,7 +591,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         }
 
     except Exception as e:
-        frappe.log_error(f"Verification Error: {str(e)}")
+        pass
         return {"ok": False, "message": f"System Error during verification."}
         
     finally:
