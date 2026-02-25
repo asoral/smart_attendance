@@ -1654,7 +1654,7 @@
                         try {
                             document.getElementById('btn-m-list-done').onclick = () => {
                                 document.getElementById('m-list-modal').style.display = 'none';
-                                detecting = true;
+                                sleepKiosk();
                             };
                         } catch (e) { }
                         const data = await callURL("smart_attendance.api.get_recent_attendance", { employee: employeeId });
@@ -1670,7 +1670,7 @@
                         try {
                             document.getElementById('btn-m-list-done').onclick = () => {
                                 document.getElementById('m-list-modal').style.display = 'none';
-                                detecting = true;
+                                sleepKiosk();
                             };
                         } catch (e) { }
                         const data = await callURL("smart_attendance.api.get_employee_holidays", { employee: employeeId });
@@ -1681,10 +1681,10 @@
                 // Close Success
                 document.getElementById('btn-m-success-done').onclick = () => {
                     document.getElementById('m-success-modal').style.display = 'none';
+                    sleepKiosk();
                     // Force clean state
                     stableSince = null;
                     blinkCount = 0;
-                    detecting = true;
                     // Reset hint
                     const hint = document.getElementById("camera-hint");
                     if (hint) {
@@ -1697,12 +1697,14 @@
                 };
                 document.getElementById('btn-m-success-close').onclick = () => {
                     document.getElementById('m-success-modal').style.display = 'none';
+                    sleepKiosk();
                 };
 
                 // Close List
                 document.getElementById('m-list-modal').onclick = (e) => {
                     if (e.target.id === 'm-list-modal' || e.target.id === 'btn-m-close-list-area') {
                         document.getElementById('m-list-modal').style.display = 'none';
+                        sleepKiosk();
                     }
                 };
             }

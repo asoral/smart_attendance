@@ -10,7 +10,9 @@ CLOSING_SCRIPT_TAG_PATTERN = re.compile(r"</script\>")
 
 def get_context(context):
     if frappe.session.user == "Guest":
-        boot = frappe.website.utils.get_boot_data()
+        login_url = frappe.utils.get_url("/login")
+        frappe.local.flags.redirect_location = f"{login_url}?redirect-to="
+        raise frappe.Redirect
     else:
         try:
             boot = frappe.sessions.get()
