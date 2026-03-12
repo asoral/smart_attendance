@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 smart_attendance.patches.initialize_kiosk_permissions
+smart_attendance.patches.add_smart_attendance_settings_fields

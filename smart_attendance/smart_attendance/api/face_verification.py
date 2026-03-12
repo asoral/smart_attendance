@@ -160,34 +160,35 @@ def check_liveness(image_path, face_location=None):
         
         pass
         
+        # Fetch settings from Doctype or default
+        settings = frappe.get_single("Smart Attendance Settings")
+        TEXTURE_LIMIT = getattr(settings, "texture_score_limit", 8.0) or 8.0
+        ORG_V_LIMIT_LOW = getattr(settings, "organic_variance_limit", 0.20) or 0.20
+        ORG_V_LIMIT_HIGH = ORG_V_LIMIT_LOW + 0.10
+        SHARPNESS_LIMIT = getattr(settings, "digital_grid_sharpness", 0.25) or 0.25
+        
         # REJECTION CRITERIA (ADAPTIVE BIOMETRIC)
         # 1. Base Texture Floor
-        # Tightened from 9 to 18 to block smooth phone screens/photos
-        if texture_score < 18:
+        # Further relaxed to 8 for speed and reliability, or read from settings
+        if texture_score < TEXTURE_LIMIT:
             return False, f"Anti-Spoofing: Natural texture too low ({texture_score:.1f})"
             
         # 2. Regional Variance (The "Flat" Check)
-        # Real faces > 0.4. Photos/Screens < 0.3.
-        # Strict if low detail.
-        # Tightened to 0.45/0.35
-        v_limit = 0.45 if is_low_detail else 0.35
+        # Even more relaxed thresholds
+        v_limit = ORG_V_LIMIT_HIGH if is_low_detail else ORG_V_LIMIT_LOW
         if org_v < v_limit:
              return False, f"Anti-Spoofing: Surface too uniform ({org_v:.2f})"
 
         # 3. Frequency Ratio Check 
-        # Real phone hits ~42. Photos hit 39-45.
-        # High quality cameras can hit 50+. 
-        # Tightened to 50 to block high-freq screens.
-        r_limit = 50 if is_low_detail else 47
+        # More tolerant of high-frequency noise
+        r_limit = 55 if is_low_detail else 52
          
         if rel_freq > r_limit:
             return False, f"Anti-Spoofing: Secondary scan failed ({rel_freq:.1f})"
             
         # 4. Signal Sharpness (Digital Grid)
-        # Valid User: 0.12.
-        # Screen: > 0.18 usually.
-        # Tightened further to 0.14 to block recent Retina exploit (0.18).
-        if sharpness > 0.14:
+        # Relaxed grid detection threshold further to 0.25, or read from settings
+        if sharpness > SHARPNESS_LIMIT:
              return False, f"Anti-Spoofing: Digital grid detected ({sharpness:.2f})"
 
         # 5. Color Integrity Check (YCrCb & HSV) - Blocks Video/Blue-Screens
@@ -214,27 +215,22 @@ def check_liveness(image_path, face_location=None):
             # If saturation is suspiciously uniform (low variance), it's likely a screen/photo
             # Real skin usually > 15-20 depending on lighting.
             # Screen/Paper often < 10.
-            if s_std < 12 and np.mean(s) > 30:
+            if s_std < 8 and np.mean(s) > 30:
                  return False, f"Anti-Spoofing: Color saturation too uniform ({s_std:.1f})"
 
         except:
             pass
 
-        # 6. Specular Highlight Check (Glass Reflection - ACTIVE BLOCK)
-        # Screens/Phones are glass and reflect point lights sharply.
-        _, max_val, _, _ = cv2.minMaxLoc(gray_face)
-        if max_val >= 250:
-            # Check area of saturation
-            ret, thresh = cv2.threshold(gray_face, 248, 255, cv2.THRESH_BINARY)
-            bright_pixels = cv2.countNonZero(thresh)
-            total_pixels = gray_face.shape[0] * gray_face.shape[1]
-            ratio = bright_pixels / total_pixels
-            
-            # Small intense reflection (0.05% to 1.5%) is suspicious of glass glare
-            # Real faces have broader highlights (oil).
-            # Tightened: actively reject if this signature matches glass glare.
-            if 0.0005 < ratio < 0.015: 
-                 return False, f"Anti-Spoofing: Screen glare detected"
+        # 6. Specular Highlight Check (Glass Reflection - DISABLED)
+        # _, max_val, _, _ = cv2.minMaxLoc(gray_face)
+        # if max_val >= 250:
+        #     ret, thresh = cv2.threshold(gray_face, 248, 255, cv2.THRESH_BINARY)
+        #     bright_pixels = cv2.countNonZero(thresh)
+        #     total_pixels = gray_face.shape[0] * gray_face.shape[1]
+        #     ratio = bright_pixels / total_pixels
+        #     if 0.0005 < ratio < 0.035: 
+        #          return False, f"Anti-Spoofing: Screen glare detected"
+        pass
 
         # 7. Face Size/Ratio Plausibility (Zooms)
         # If user zooms in on a phone, the face often takes up > 70% of the image or looks distorted.
@@ -244,8 +240,8 @@ def check_liveness(image_path, face_location=None):
         face_h, face_w = gray_face.shape[:2]
         coverage = (face_h * face_w) / (img_h * img_w)
         
-        # If face is HUGE (zoom), block.
-        if coverage > 0.65:
+        # If face is HUGE (zoom), block. Relaxed from 0.65 to 0.85
+        if coverage > 0.85:
              return False, f"Anti-Spoofing: Face too close/zoomed ({int(coverage*100)}%)"
         
         # 8. Moiré Pattern (Improved High-Freq Power)
@@ -299,17 +295,29 @@ def attach_image_to_fal(fal_name, image_base64):
 # ------------ ✅ MAIN API ------------
 
 @frappe.whitelist(allow_guest=True)
-def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_type: str = "AUTO", tolerance: float = 0.45, timestamp: str = None, verify_only: bool = False):
+def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_type: str = "AUTO", tolerance: float = None, timestamp: str = None, verify_only: bool = False):
     """
     Inputs:
         employee: Optional.
         image_base64: Required.
         log_type: "IN", "OUT", or "AUTO".
-        tolerance: Matching threshold for dlib (default 0.45).
-                   Lower is stricter. 0.4 is recommended for high security.
+        tolerance: Matching threshold for dlib. If None, fetched from Settings (default 0.52).
     """
     
     pass
+
+    # Fetch settings
+    settings = frappe.get_single("Smart Attendance Settings")
+    
+    if tolerance is None:
+        tolerance = getattr(settings, "match_tolerance", 0.52) or 0.52
+    else:
+        try:
+             tolerance = float(tolerance)
+        except:
+             tolerance = getattr(settings, "match_tolerance", 0.52) or 0.52
+             
+    COOLDOWN_SECONDS = getattr(settings, "cooldown_seconds", 10) or 10
 
     # Sanitize log_type - Default to IN, treat AUTO as IN explicit mode
     if not log_type or str(log_type).lower() in ["null", "undefined", "none", "", "auto"]:
@@ -393,10 +401,9 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                  return {"ok": False, "message": f"Employee {employee} has no face registered. Please register face first."}
              
              # Enforce Strict Tolerance for Explicit Check
-             # tolerance = 0.45 if 0.45 < float(tolerance) else float(tolerance)
-             # Let's enforce 0.42 as a hard limit for explicit checks to avoid mismatches
-             if tolerance > 0.42:
-                 tolerance = 0.42
+             # Let's enforce 0.45 as a hard limit for explicit checks to avoid mismatches
+             if tolerance > 0.45:
+                 tolerance = 0.45
 
         best_match_emp = None
         best_match_dist = 100.0
@@ -442,9 +449,9 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         if not employee:
             diff_score = second_best_dist - best_match_dist
             
-            required_gap = 0.05
-            if best_match_dist > 0.40:
-                 required_gap = 0.08
+            required_gap = 0.04
+            if best_match_dist > 0.42:
+                 required_gap = 0.06
                  
             if diff_score < required_gap and second_best_dist < tolerance:
                  pass
@@ -457,6 +464,36 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
         if best_match_dist <= tolerance:
             detected_employee = best_match_emp
             match_distance = float(best_match_dist)
+
+            # --- PRE-EMPTIVE COOLDOWN CHECK ---
+            # If they just checked in, return success without failing on the 45s block
+            try:
+                last_checkin = frappe.db.get_value("Employee Checkin", 
+                    {"employee": detected_employee}, 
+                    ["name", "time", "log_type"], 
+                    order_by="time desc",
+                    as_dict=True
+                )
+                if last_checkin:
+                    from frappe.utils import get_datetime
+                    diff = (now_datetime() - get_datetime(last_checkin.time)).total_seconds()
+                    
+                    # Check pre-emptive cooldown based on settings
+                    if diff < COOLDOWN_SECONDS:
+                        emp_name = frappe.db.get_value("Employee", detected_employee, "employee_name")
+                        return {
+                            "ok": True,
+                            "employee": detected_employee,
+                            "employee_name": emp_name,
+                            "log_type": last_checkin.log_type,
+                            "distance": match_distance,
+                            "message": f"Welcome back {emp_name or detected_employee}",
+                            "already_marked": True,
+                            "name": last_checkin.name,
+                            "time": last_checkin.time
+                        }
+            except Exception:
+                pass
         else:
              msg = f"Face mismatch for {employee}" if employee else "Face not recognized"
              return {
@@ -510,7 +547,7 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
             if last_audit_time:
                 from frappe.utils import get_datetime
                 diff = (now_datetime() - get_datetime(last_audit_time)).total_seconds()
-            if diff < 60 or verify_only:
+            if diff < COOLDOWN_SECONDS or verify_only:
                     # frappe.log_error(f"Audit log skipped for {detected_employee} (Cooldown: {int(diff)}s)", "Kiosk Debug")
                     return {
                         "ok": True,
@@ -560,10 +597,10 @@ def mark_attendance_by_face(employee: str = None, image_base64: str = None, log_
                 pass
                 log_time = now_datetime()
 
+            log.employee = detected_employee
             log.time = log_time
             log.log_type = final_log_type
             log.distance = match_distance
-            log.details = f"Liveness: Pass, Dist: {match_distance:.4f}"
             log.insert(ignore_permissions=True)
             log_name = log.name
             

@@ -86,9 +86,9 @@ def mark_kiosk_attendance(employee, log_type=None, timestamp=None):
             
             # Handle negative diff (Clock skew where new time < old time) or short diff
             # Allow check-in if diff is huge negative (e.g. days) just in case, but block imminent repeats
-            # Standard cooldown: 45 seconds (User requested ~49s ok)
-            if 0 <= diff < 45: 
-                return {"ok": False, "message": f"Please wait {int(45 - diff)}s before next check-in."}
+            # Standard cooldown: 10 seconds (for fast kiosk feel)
+            if 0 <= diff < 10: 
+                return {"ok": False, "message": f"Please wait {int(10 - diff)}s before next check-in."}
             elif -3600 < diff < 0:
                  # If time moved backwards slightly (up to 1 hour), block to be safe against glitches
                  return {"ok": False, "message": "Clock skew detected. Please wait a moment."}
