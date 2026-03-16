@@ -2079,7 +2079,7 @@
             /* ---------- CSRF HELPER ---------- */
             async function fetchKioskCSRF() {
                 try {
-                    const res = await fetch('/api/method/smart_attendance.smart_attendance.api.get_csrf_token');
+                    const res = await fetch('/api/method/smart_attendance.api.get_csrf_token');
                     if (res.ok) {
                         const d = await res.json();
                         if (d.message && d.message.csrf_token) {
@@ -2087,9 +2087,9 @@
                             console.log("Updated CSRF Token from server:", frappe.csrf_token);
                             return true;
                         }
-                    } else if (res.status === 417 || res.status === 403) {
-                        // Critical Session failure - Likely stale cookies
-                        console.warn("Session invalid (417/403). Clearing cookies to recover.");
+                    } else if (res.status === 417 || res.status === 403 || res.status === 401) {
+                        // Critical Session failure 
+                        console.warn("Session invalid - Clearing cookies to recover.");
                         document.cookie.split(";").forEach(c => {
                             document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
                         });
@@ -2125,8 +2125,8 @@
 
                     if (!res.ok) {
                         console.error(`API ${method} failed with status ${res.status}`);
-                        if (res.status === 417 || res.status === 403) {
-                            console.warn("API 417/403 - Clearing Cookies & Reloading");
+                        if (res.status === 417 || res.status === 403 || res.status === 401) {
+                            console.warn("API Error - Clearing Cookies & Reloading");
                             document.cookie.split(";").forEach(c => {
                                 document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
                             });
@@ -2172,6 +2172,14 @@
                     // Log full error body
                     if (!res.ok) {
                         console.error(`API ${method} failed with status ${res.status}`);
+                        if (res.status === 417 || res.status === 403 || res.status === 401) {
+                            console.warn("API Error - Clearing Cookies & Reloading");
+                            document.cookie.split(";").forEach(c => {
+                                document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
+                            });
+                            window.location.reload();
+                            return { ok: false, message: "Session Expired. Reloading...", status: res.status };
+                        }
                         let errorMsg = "Request Failed";
                         try {
                             const errData = await res.json();

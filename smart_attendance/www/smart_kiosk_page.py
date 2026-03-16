@@ -11,7 +11,7 @@ CLOSING_SCRIPT_TAG_PATTERN = re.compile(r"</script\>")
 def get_context(context):
     if frappe.session.user == "Guest":
         login_url = frappe.utils.get_url("/login")
-        frappe.local.flags.redirect_location = f"{login_url}?redirect-to="
+        frappe.local.flags.redirect_location = f"{login_url}?redirect-to=/face_kiosk"
         raise frappe.Redirect
     else:
         try:
